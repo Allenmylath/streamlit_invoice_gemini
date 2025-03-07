@@ -21,7 +21,7 @@ logger = logging.getLogger("InvoiceBatchProcessor")
 class InvoiceBatchProcessor:
     def __init__(
         self,
-        s3_bucket: str = "invoices-data",
+        s3_bucket: str = "invoices-data-dataastra",
         requests_per_minute: int = 10
     ):
         """
