@@ -279,7 +279,7 @@ class InvoiceBatchProcessor:
             logger.error(f"Error uploading to S3: {str(e)}")
             result["s3_error"] = str(e)
             return result
-"""
+
 # Usage example
 async def process_invoices(
     invoice_files: List[Tuple[bytes, str, str]],
@@ -301,4 +301,4 @@ async def process_invoices(
     )
     
     return await processor.process_batch(invoice_files)
-"""
+
