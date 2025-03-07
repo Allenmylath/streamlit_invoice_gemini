@@ -190,9 +190,13 @@ class InvoiceBatchProcessor:
                 """
                 
                 # Generate content - need to run in thread pool since genai is synchronous
-                response = await asyncio.to_thread(
-                    self.model.generate_content,
-                    [prompt, image]
+                # In _process_single_invoice method
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.model.generate_content,
+                        [prompt, image]
+                    ),
+                    timeout=120  # 2 minute timeout per invoice
                 )
                 
                 # Extract the text from the response
