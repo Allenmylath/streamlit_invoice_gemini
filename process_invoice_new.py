@@ -23,7 +23,7 @@ class InvoiceBatchProcessor:
     def __init__(
         self,
         s3_bucket: str = "invoices-data-dataastra",
-        requests_per_minute: int = 10
+        requests_per_minute: int = 500
     ):
         """
         Initialize the batch invoice processor with API keys from environment and rate limiter
