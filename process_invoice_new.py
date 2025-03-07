@@ -283,7 +283,7 @@ class InvoiceBatchProcessor:
 # Usage example
 async def process_invoices(
     invoice_files: List[Tuple[bytes, str, str]],
-    s3_bucket: str = "invoices-data"
+    s3_bucket: str = "invoices-data-dataastra"
 ) -> Dict[str, Any]:
     """
     Process a batch of invoice files using environment variable credentials
