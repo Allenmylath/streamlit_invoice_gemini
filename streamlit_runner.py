@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 
 # Import our batch processor
-from invoice_processor import InvoiceBatchProcessor, process_invoices
+from process_invoice_new import InvoiceBatchProcessor, process_invoices
 
 # Set page configuration
 st.set_page_config(
