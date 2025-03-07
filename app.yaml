@@ -1,0 +1,4 @@
+http:
+  routes:
+    - path: /
+      timeout: 1200s
