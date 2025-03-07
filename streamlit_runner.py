@@ -11,6 +11,8 @@ from datetime import datetime
 # Import our batch processor
 from process_invoice_new import InvoiceBatchProcessor, process_invoices
 
+os.environ['STREAMLIT_SERVER_TIMEOUT'] = '1200'
+
 # Set page configuration
 st.set_page_config(
     page_title="Batch Invoice Processor",
