@@ -474,7 +474,7 @@ async def process_invoices(
     try:
         processor = InvoiceBatchProcessor(
             s3_bucket=s3_bucket,
-            requests_per_minute=2
+            requests_per_minute=5
         )
         
         result = await processor.process_batch(invoice_files)
