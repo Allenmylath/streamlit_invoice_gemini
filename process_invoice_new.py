@@ -33,7 +33,7 @@ class InvoiceBatchProcessor:
             s3_bucket: S3 bucket name to store processed results
             requests_per_minute: Maximum Gemini API requests per minute (default: 10)
         """
-        logger.info(f"Initializing InvoiceBatchProcessor with bucket: {s3_bucket}, rate limit: {requests_per_minute} rpm")
+        logger.info(f"Initializing InvoiceBatchProcessor with bucket: {s3_bucket}, rate limit: {requests_per_sec} rps")
         
         # Get API keys from environment variables
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
