@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 import threading
 import json
+import pickle
 
 # Import our batch processor
 from process_invoice_new import InvoiceBatchProcessor, process_invoices
@@ -21,14 +22,41 @@ st.set_page_config(
     layout="wide"
 )
 
+# File path for storing progress data
+PROGRESS_FILE = "/tmp/invoice_progress.pickle"
+
+# Function to save progress data to file
+def save_progress(current, total, message):
+    try:
+        with open(PROGRESS_FILE, 'wb') as f:
+            pickle.dump({
+                'current': current,
+                'total': total,
+                'message': message,
+                'timestamp': time.time()
+            }, f)
+    except Exception as e:
+        print(f"Error saving progress: {e}")
+
+# Function to load progress data from file
+def load_progress():
+    try:
+        if os.path.exists(PROGRESS_FILE):
+            with open(PROGRESS_FILE, 'rb') as f:
+                return pickle.load(f)
+    except Exception as e:
+        print(f"Error loading progress: {e}")
+    
+    return {
+        'current': 0,
+        'total': 0,
+        'message': 'Initializing...',
+        'timestamp': time.time()
+    }
+
 # Non-blocking async execution function that doesn't block the main thread
 def run_async_non_blocking(coro, callback=None):
-    """Run an async coroutine in a non-blocking way.
-    
-    Args:
-        coro: The coroutine to run
-        callback: Optional callback function to call with the result
-    """
+    """Run an async coroutine in a non-blocking way."""
     async def _run_and_capture():
         try:
             result = await coro
@@ -36,7 +64,7 @@ def run_async_non_blocking(coro, callback=None):
                 callback(result)
             return result
         except Exception as e:
-            st.error(f"Error in async execution: {str(e)}")
+            print(f"Error in async execution: {str(e)}")
             if callback:
                 callback({"error": str(e)})
             return {"error": str(e)}
@@ -51,26 +79,29 @@ def run_async_non_blocking(coro, callback=None):
 
 # Callback function for when processing completes
 def on_processing_complete(result):
-    if "error" in result:
-        st.session_state.processing_error = result["error"]
-    else:
-        st.session_state.summary = result
-    
-    st.session_state.processing_complete = True
-    st.session_state.processing_thread = None
-    st.session_state.progress_value = 1.0  # Set to 100% when done
-    st.session_state.status_message = "Processing complete!"
-    # Don't call st.rerun() from a background thread
+    # Mark as complete in session state (safe to modify on main thread)
+    if st.session_state.get('processing_started'):
+        if "error" in result:
+            save_progress(0, 0, f"Error: {result['error']}")
+        else:
+            save_progress(result['total_processed'], result['total_processed'], "Processing complete!")
+        
+        # Flag as complete in both session state and a file marker
+        with open("/tmp/invoice_processing_complete", "w") as f:
+            f.write("complete")
 
-# Modified InvoiceBatchProcessor that updates progress in session state
+# Modified InvoiceBatchProcessor that reports progress via file
 class ProgressReportingProcessor(InvoiceBatchProcessor):
     def __init__(self, s3_bucket="invoices-data-dataastra", requests_per_minute=10):
         super().__init__(s3_bucket, requests_per_minute)
+        self.processed_count = 0
+        self.total_count = 0
         
     async def process_batch(self, invoice_files):
-        # Store the total count in session state for tracking
-        st.session_state.total_files = len(invoice_files)
-        st.session_state.processed_files = 0
+        # Initialize progress
+        self.total_count = len(invoice_files)
+        self.processed_count = 0
+        save_progress(0, self.total_count, "Starting processing...")
         
         # Call the parent implementation
         return await super().process_batch(invoice_files)
@@ -79,36 +110,30 @@ class ProgressReportingProcessor(InvoiceBatchProcessor):
         # Call the parent implementation
         result = await super()._process_and_upload(file_bytes, file_type, file_name, batch_id, s3_folder)
         
-        # Update the processed count in session state
-        st.session_state.processed_files += 1
-        
-        # Calculate and update progress
-        progress = st.session_state.processed_files / st.session_state.total_files
-        st.session_state.progress_value = progress
-        st.session_state.status_message = f"Processing file {st.session_state.processed_files}/{st.session_state.total_files}..."
+        # Update progress in file
+        self.processed_count += 1
+        save_progress(
+            self.processed_count, 
+            self.total_count,
+            f"Processing file {self.processed_count}/{self.total_count}: {file_name}"
+        )
         
         return result
 
-# Modified process_invoices function that uses our progress-aware processor
+# Modified process_invoices function
 async def process_invoices_with_progress(
     invoice_files: List[Tuple[bytes, str, str]],
     s3_bucket: str = "invoices-data-dataastra"
 ) -> dict:
-    """
-    Process a batch of invoice files using environment variable credentials
-    with progress reporting
-    
-    Args:
-        invoice_files: List of tuples (file_bytes, file_type, file_name)
-        s3_bucket: S3 bucket name
-        
-    Returns:
-        Dict with processing summary
-    """
+    """Process a batch of invoice files with progress reporting"""
     processor = ProgressReportingProcessor(
         s3_bucket=s3_bucket,
-        requests_per_minute=2  # Match your current setting
+        requests_per_minute=2
     )
+    
+    # Remove completion marker if it exists
+    if os.path.exists("/tmp/invoice_processing_complete"):
+        os.remove("/tmp/invoice_processing_complete")
     
     result = await processor.process_batch(invoice_files)
     return result
@@ -153,11 +178,9 @@ with col1:
                 st.session_state.processing_started = True
                 st.session_state.processing_complete = False
                 st.session_state.summary = None
-                st.session_state.processing_error = None
-                st.session_state.progress_value = 0.0
-                st.session_state.status_message = "Starting processing..."
-                st.session_state.total_files = len(invoice_files)
-                st.session_state.processed_files = 0
+                
+                # Initialize progress
+                save_progress(0, len(invoice_files), "Starting processing...")
                 
                 # Force a rerun to start processing in the other column
                 st.rerun()
@@ -165,6 +188,11 @@ with col1:
 # Column 2: Processing and Results display
 with col2:
     st.subheader("Processing Status")
+    
+    # Check for completed processing
+    processing_complete = os.path.exists("/tmp/invoice_processing_complete")
+    if processing_complete and st.session_state.get('processing_started', False):
+        st.session_state.processing_complete = True
     
     # If processing has been initiated
     if st.session_state.get('processing_started', False) and not st.session_state.get('processing_complete', False):
@@ -175,10 +203,14 @@ with col2:
             # Display some initial information
             st.info(f"Processing {len(invoice_files)} invoices")
             
-            # Create progress bar and status text using session state values
-            progress_bar = st.progress(st.session_state.get('progress_value', 0.0))
+            # Load the current progress
+            progress_data = load_progress()
+            progress_value = progress_data['current'] / max(progress_data['total'], 1)
+            
+            # Create progress bar and status text
+            progress_bar = st.progress(progress_value)
             status_text = st.empty()
-            status_text.text(st.session_state.get('status_message', 'Starting processing...'))
+            status_text.text(progress_data['message'])
             
             # Start the processing in a non-blocking way if not already started
             if not st.session_state.get('processing_thread'):
@@ -187,67 +219,65 @@ with col2:
                     process_invoices_with_progress(invoice_files),
                     callback=on_processing_complete
                 )
-                
-                # Set up auto-refresh - Use Streamlit's auto-refresh capability
-                st.session_state.last_refresh_time = time.time()
             
-            # Handle auto-refresh for progress updates
-            if time.time() - st.session_state.get('last_refresh_time', 0) > 1:  # Refresh every second
-                st.session_state.last_refresh_time = time.time()
-                # Update the progress bar with the current value from session state
-                progress_bar.progress(st.session_state.get('progress_value', 0.0))
-                status_text.text(st.session_state.get('status_message', 'Processing...'))
-                
-                # Automatically rerun to update progress
-                time.sleep(0.1)  # Small delay
-                st.rerun()
+            # Refresh the page automatically every 2 seconds to update progress
+            time.sleep(2)
+            st.rerun()
     
     # Display results if available
     if st.session_state.get('processing_complete', False):
-        if st.session_state.get('processing_error'):
-            st.error(f"Error during processing: {st.session_state.processing_error}")
-            st.session_state.processing_started = False
+        progress_data = load_progress()
         
-        elif st.session_state.get('summary'):
-            summary = st.session_state.summary
-            
+        if "Error" in progress_data.get('message', ''):
+            st.error(progress_data['message'])
+            st.session_state.processing_started = False
+        else:
             st.success("✅ Batch processing complete!")
             
-            # Show batch information
-            st.markdown("### Batch Information")
-            st.write(f"**Batch ID:** {summary['batch_id']}")
-            st.write(f"**Timestamp:** {summary['timestamp']}")
-            st.write(f"**S3 Location:** {summary['s3_folder']}")
+            # Try to load the summary from the session state if available
+            summary = None
             
-            # Show statistics
-            st.markdown("### Processing Statistics")
-            col_stats1, col_stats2, col_stats3 = st.columns(3)
-            
-            with col_stats1:
-                st.metric(label="Total Files", value=summary['total_files'])
-            
-            with col_stats2:
-                st.metric(label="Successfully Processed", value=summary['successful'])
-            
-            with col_stats3:
-                st.metric(label="Failed", value=summary['failed'])
-            
-            # Show detailed file status
-            st.markdown("### File Status")
-            
-            # Create a table to display file results
-            file_data = []
-            for file_info in summary['files']:
-                status = "✅ Success" if file_info['success'] else "❌ Failed"
-                s3_key = file_info.get('s3_key', 'N/A')
-                file_data.append({
-                    "File Name": file_info['file_name'],
-                    "Status": status,
-                    "S3 Key": s3_key
-                })
-            
-            # Display the file status table
-            st.dataframe(file_data, use_container_width=True)
+            # If we don't have a summary, display basic information
+            if summary is None:
+                # Display the final progress
+                st.progress(1.0)
+                st.info("Processing complete. Check your S3 bucket for results.")
+            else:
+                # Show batch information
+                st.markdown("### Batch Information")
+                st.write(f"**Batch ID:** {summary['batch_id']}")
+                st.write(f"**Timestamp:** {summary['timestamp']}")
+                st.write(f"**S3 Location:** {summary['s3_folder']}")
+                
+                # Show statistics
+                st.markdown("### Processing Statistics")
+                col_stats1, col_stats2, col_stats3 = st.columns(3)
+                
+                with col_stats1:
+                    st.metric(label="Total Files", value=summary['total_files'])
+                
+                with col_stats2:
+                    st.metric(label="Successfully Processed", value=summary['successful'])
+                
+                with col_stats3:
+                    st.metric(label="Failed", value=summary['failed'])
+                
+                # Show detailed file status
+                st.markdown("### File Status")
+                
+                # Create a table to display file results
+                file_data = []
+                for file_info in summary['files']:
+                    status = "✅ Success" if file_info['success'] else "❌ Failed"
+                    s3_key = file_info.get('s3_key', 'N/A')
+                    file_data.append({
+                        "File Name": file_info['file_name'],
+                        "Status": status,
+                        "S3 Key": s3_key
+                    })
+                
+                # Display the file status table
+                st.dataframe(file_data, use_container_width=True)
 
 # Add some helpful information at the bottom
 st.markdown("---")
@@ -275,15 +305,3 @@ if 'processing_thread' not in st.session_state:
 
 if 'summary' not in st.session_state:
     st.session_state.summary = None
-
-if 'processing_error' not in st.session_state:
-    st.session_state.processing_error = None
-
-if 'progress_value' not in st.session_state:
-    st.session_state.progress_value = 0.0
-
-if 'status_message' not in st.session_state:
-    st.session_state.status_message = "Waiting to start..."
-
-if 'last_refresh_time' not in st.session_state:
-    st.session_state.last_refresh_time = 0
