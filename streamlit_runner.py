@@ -1,14 +1,3 @@
-# This code needs to be in a separate file named .streamlit/config.toml
-# in your project directory to properly set the timeout before Streamlit initializes
-"""
-[server]
-timeout = 1200
-maxUploadSize = 200
-headless = true
-enableCORS = false
-enableXsrfProtection = false
-"""
-
 # streamlit_runner.py
 import streamlit as st
 import os
@@ -44,26 +33,13 @@ def run_async_non_blocking(coro, callback=None):
         try:
             result = await coro
             if callback:
-                # Use an event loop to safely call the callback from the main thread
-                asyncio.run_coroutine_threadsafe(
-                    callback_wrapper(result), 
-                    asyncio.get_event_loop()
-                )
+                callback(result)
             return result
         except Exception as e:
             st.error(f"Error in async execution: {str(e)}")
             if callback:
-                # Call callback with error information
-                asyncio.run_coroutine_threadsafe(
-                    callback_wrapper({"error": str(e)}), 
-                    asyncio.get_event_loop()
-                )
+                callback({"error": str(e)})
             return {"error": str(e)}
-            
-    async def callback_wrapper(result):
-        # This is a coroutine wrapper for the callback
-        if callback:
-            callback(result)
     
     # Create a new thread for the async operation
     thread = threading.Thread(
@@ -82,34 +58,19 @@ def on_processing_complete(result):
     
     st.session_state.processing_complete = True
     st.session_state.processing_thread = None
-    # Update progress to 100% when done
-    if 'progress_bar' in st.session_state:
-        st.session_state.progress_bar.progress(1.0)
-        st.session_state.status_text.text("Processing complete!")
-    st.rerun()
+    st.session_state.progress_value = 1.0  # Set to 100% when done
+    st.session_state.status_message = "Processing complete!"
+    # Don't call st.rerun() from a background thread
 
-# Function to update progress
-def update_progress(current, total):
-    """Update the progress bar in the Streamlit app."""
-    if 'progress_bar' in st.session_state:
-        progress = min(current / total, 1.0) if total > 0 else 0
-        st.session_state.progress_bar.progress(progress)
-        st.session_state.status_text.text(f"Processing file {current}/{total}...")
-
-# Modified InvoiceBatchProcessor that reports progress
+# Modified InvoiceBatchProcessor that updates progress in session state
 class ProgressReportingProcessor(InvoiceBatchProcessor):
-    def __init__(self, s3_bucket="invoices-data-dataastra", requests_per_minute=1000):
+    def __init__(self, s3_bucket="invoices-data-dataastra", requests_per_minute=10):
         super().__init__(s3_bucket, requests_per_minute)
-        self.processed_count = 0
-        self.total_count = 0
         
     async def process_batch(self, invoice_files):
-        # Set the total count at the beginning
-        self.total_count = len(invoice_files)
-        self.processed_count = 0
-        
-        # Start a background task to update progress periodically
-        self._start_progress_updates()
+        # Store the total count in session state for tracking
+        st.session_state.total_files = len(invoice_files)
+        st.session_state.processed_files = 0
         
         # Call the parent implementation
         return await super().process_batch(invoice_files)
@@ -118,32 +79,15 @@ class ProgressReportingProcessor(InvoiceBatchProcessor):
         # Call the parent implementation
         result = await super()._process_and_upload(file_bytes, file_type, file_name, batch_id, s3_folder)
         
-        # Increment the processed count
-        self.processed_count += 1
+        # Update the processed count in session state
+        st.session_state.processed_files += 1
         
-        # Update the progress in Streamlit
-        # This will execute in a separate thread via streamlit's state
-        if hasattr(st, 'session_state') and 'progress_placeholder' in st.session_state:
-            update_progress(self.processed_count, self.total_count)
+        # Calculate and update progress
+        progress = st.session_state.processed_files / st.session_state.total_files
+        st.session_state.progress_value = progress
+        st.session_state.status_message = f"Processing file {st.session_state.processed_files}/{st.session_state.total_files}..."
         
         return result
-    
-    def _start_progress_updates(self):
-        # Start a background thread that periodically updates progress
-        def update_thread():
-            while self.processed_count < self.total_count:
-                # Update progress via session state if available
-                if hasattr(st, 'session_state') and 'progress_bar' in st.session_state:
-                    # Using streamlit's threading-safe operations
-                    st.session_state.progress_bar.progress(self.processed_count / self.total_count)
-                    st.session_state.status_text.text(f"Processing file {self.processed_count}/{self.total_count}...")
-                
-                # Sleep for a short period to avoid excessive updates
-                time.sleep(0.5)
-        
-        # Start the thread
-        thread = threading.Thread(target=update_thread, daemon=True)
-        thread.start()
 
 # Modified process_invoices function that uses our progress-aware processor
 async def process_invoices_with_progress(
@@ -163,7 +107,7 @@ async def process_invoices_with_progress(
     """
     processor = ProgressReportingProcessor(
         s3_bucket=s3_bucket,
-        requests_per_minute=2
+        requests_per_minute=2  # Match your current setting
     )
     
     result = await processor.process_batch(invoice_files)
@@ -210,6 +154,10 @@ with col1:
                 st.session_state.processing_complete = False
                 st.session_state.summary = None
                 st.session_state.processing_error = None
+                st.session_state.progress_value = 0.0
+                st.session_state.status_message = "Starting processing..."
+                st.session_state.total_files = len(invoice_files)
+                st.session_state.processed_files = 0
                 
                 # Force a rerun to start processing in the other column
                 st.rerun()
@@ -227,12 +175,10 @@ with col2:
             # Display some initial information
             st.info(f"Processing {len(invoice_files)} invoices")
             
-            # Create progress bar and status text
-            st.session_state.progress_bar = st.progress(0)
-            st.session_state.status_text = st.empty()
-            
-            # Store a reference to the progress placeholder for the background thread
-            st.session_state.progress_placeholder = True
+            # Create progress bar and status text using session state values
+            progress_bar = st.progress(st.session_state.get('progress_value', 0.0))
+            status_text = st.empty()
+            status_text.text(st.session_state.get('status_message', 'Starting processing...'))
             
             # Start the processing in a non-blocking way if not already started
             if not st.session_state.get('processing_thread'):
@@ -242,7 +188,19 @@ with col2:
                     callback=on_processing_complete
                 )
                 
-                st.session_state.status_text.text("Processing started in background...")
+                # Set up auto-refresh - Use Streamlit's auto-refresh capability
+                st.session_state.last_refresh_time = time.time()
+            
+            # Handle auto-refresh for progress updates
+            if time.time() - st.session_state.get('last_refresh_time', 0) > 1:  # Refresh every second
+                st.session_state.last_refresh_time = time.time()
+                # Update the progress bar with the current value from session state
+                progress_bar.progress(st.session_state.get('progress_value', 0.0))
+                status_text.text(st.session_state.get('status_message', 'Processing...'))
+                
+                # Automatically rerun to update progress
+                time.sleep(0.1)  # Small delay
+                st.rerun()
     
     # Display results if available
     if st.session_state.get('processing_complete', False):
@@ -320,3 +278,12 @@ if 'summary' not in st.session_state:
 
 if 'processing_error' not in st.session_state:
     st.session_state.processing_error = None
+
+if 'progress_value' not in st.session_state:
+    st.session_state.progress_value = 0.0
+
+if 'status_message' not in st.session_state:
+    st.session_state.status_message = "Waiting to start..."
+
+if 'last_refresh_time' not in st.session_state:
+    st.session_state.last_refresh_time = 0
