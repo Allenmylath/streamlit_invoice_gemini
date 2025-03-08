@@ -191,7 +191,7 @@ def run_async_non_blocking(coro):
 # Modified InvoiceBatchProcessor that reports progress via file
 class ProgressReportingProcessor(InvoiceBatchProcessor):
     def __init__(self, s3_bucket="invoices-data-dataastra", requests_per_sec=25):
-        super().__init__(s3_bucket, requests_per_minute)
+        super().__init__(s3_bucket, requests_per_sec)
         self.processed_count = 0
         self.total_count = 0
         
