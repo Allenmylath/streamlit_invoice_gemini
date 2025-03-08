@@ -244,14 +244,12 @@ class InvoiceBatchProcessor:
         file_type: str, 
         file_name: str
     ) -> Dict[str, Any]:
-        """
-        Process a single invoice with rate limiting
-        """
-        # Apply rate limiting
+
+    # Apply rate limiting
         async with self.rate_limiter:
             try:
                 logger.info(f"Processing invoice: {file_name}")
-                
+            
                 # Open image
                 try:
                     image = Image.open(BytesIO(image_data))
@@ -263,64 +261,104 @@ class InvoiceBatchProcessor:
                         "error": f"Image opening error: {str(e)}",
                         "timestamp": datetime.datetime.now().isoformat()
                     }
-                
+            
                 # Define the prompt for invoice extraction
                 prompt = """
                 Extract info from the invoice:
-                
+            
                 Make sure to return only valid markdown.
                 """
-                
-                # Generate content - need to run in thread pool since genai is synchronous
+            
+                # Generate content with retry mechanism
                 start_time = datetime.datetime.now()
+            
+                # Retry configuration
+                max_retries = 5
+                base_delay = 1  # Starting delay in seconds
+                max_delay = 60  # Maximum delay in seconds
+                retries = 0
+            
+                while retries <= max_retries:
+                    try:
+                        # Explicitly print before and after the Gemini API call to track issues
+                        print(f"[GEMINI API START] Processing {file_name} at {start_time.isoformat()} (Attempt {retries + 1}/{max_retries + 1})")
+                    
+                        response = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.model.generate_content,
+                                [prompt, image]
+                            ),
+                            timeout=120  # 2 minute timeout per invoice
+                        )
+                    
+                        end_time = datetime.datetime.now()
+                        processing_time = (end_time - start_time).total_seconds()
+                        print(f"[GEMINI API SUCCESS] Completed {file_name} in {processing_time:.2f}s")
+                    
+                        # Extract the text from the response
+                        markdown_str = response.text.strip()
+                        logger.info(f"Successfully processed {file_name} - generated {len(markdown_str)} chars")
+                    
+                        return {
+                            "success": True,
+                            "file_name": file_name,
+                            "markdown": markdown_str,
+                            "timestamp": datetime.datetime.now().isoformat(),
+                            "processing_time_seconds": processing_time,
+                            "retries": retries
+                        }
                 
-                try:
-                    # Explicitly print before and after the Gemini API call to track issues
-                    print(f"[GEMINI API START] Processing {file_name} at {start_time.isoformat()}")
-                    
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            self.model.generate_content,
-                            [prompt, image]
-                        ),
-                        timeout=120  # 2 minute timeout per invoice
-                    )
-                    
-                    end_time = datetime.datetime.now()
-                    processing_time = (end_time - start_time).total_seconds()
-                    print(f"[GEMINI API SUCCESS] Completed {file_name} in {processing_time:.2f}s")
-                    
-                    # Extract the text from the response
-                    markdown_str = response.text.strip()
-                    logger.info(f"Successfully processed {file_name} - generated {len(markdown_str)} chars")
-                    
-                    return {
-                        "success": True,
-                        "file_name": file_name,
-                        "markdown": markdown_str,
-                        "timestamp": datetime.datetime.now().isoformat(),
-                        "processing_time_seconds": processing_time
-                    }
-                except asyncio.TimeoutError:
-                    print(f"[GEMINI API TIMEOUT] {file_name} timed out after 120 seconds")
-                    logger.error(f"Timeout processing {file_name} after 120 seconds")
-                    return {
-                        "success": False,
-                        "file_name": file_name,
-                        "error": "Gemini API timeout after 120 seconds",
-                        "timestamp": datetime.datetime.now().isoformat()
-                    }
-                except Exception as e:
-                    print(f"[GEMINI API ERROR] {file_name} failed with error: {str(e)}")
-                    print(f"[GEMINI API ERROR TRACE] {traceback.format_exc()}")
-                    logger.error(f"Gemini API error for {file_name}: {str(e)}")
-                    return {
-                        "success": False,
-                        "file_name": file_name,
-                        "error": f"Gemini API error: {str(e)}",
-                        "timestamp": datetime.datetime.now().isoformat()
-                    }
+                    except asyncio.TimeoutError:
+                        print(f"[GEMINI API TIMEOUT] {file_name} timed out after 120 seconds")
+                        logger.error(f"Timeout processing {file_name} after 120 seconds")
+                        # Don't retry on timeouts
+                        return {
+                            "success": False,
+                            "file_name": file_name,
+                            "error": "Gemini API timeout after 120 seconds",
+                            "timestamp": datetime.datetime.now().isoformat(),
+                            "retries": retries
+                        }
                 
+                    except Exception as e:
+                        error_str = str(e)
+                        error_traceback = traceback.format_exc()
+                    
+                        # Check if this is a rate limit error (429)
+                        if "429" in error_str or "Too Many Requests" in error_str or "quota" in error_str.lower():
+                            retries += 1
+                        
+                            if retries <= max_retries:
+                                # Calculate backoff time with exponential increase and jitter
+                                delay = min(max_delay, base_delay * (2 ** (retries - 1)))
+                                # Add jitter (±20% randomness) to prevent synchronized retries
+                                jitter = delay * 0.2 * (2 * random.random() - 1)
+                                delay = delay + jitter
+                            
+                                print(f"[GEMINI API RATE LIMIT] {file_name} hit rate limit. Retry {retries}/{max_retries} after {delay:.2f}s")
+                                logger.warning(f"Rate limit hit for {file_name}. Backing off for {delay:.2f}s (retry {retries}/{max_retries})")
+                            
+                                # Wait before retrying
+                                await asyncio.sleep(delay)
+                                continue  # Retry the operation
+                            else:
+                                print(f"[GEMINI API RATE LIMIT] {file_name} exceeded max retries ({max_retries})")
+                                logger.error(f"Rate limit retries exhausted for {file_name} after {max_retries} attempts")
+                        else:
+                            # Not a rate limit error, no retry
+                            print(f"[GEMINI API ERROR] {file_name} failed with non-rate limit error: {error_str}")
+                            print(f"[GEMINI API ERROR TRACE] {error_traceback}")
+                            logger.error(f"Gemini API error for {file_name}: {error_str}")
+                    
+                        # Return error result if all retries failed or it's not a rate limit error
+                        return {
+                            "success": False,
+                            "file_name": file_name,
+                            "error": f"Gemini API error: {error_str}",
+                            "timestamp": datetime.datetime.now().isoformat(),
+                            "retries": retries
+                        }
+            
             except Exception as e:
                 logger.error(f"Error processing {file_name}: {str(e)}")
                 logger.error(f"Exception traceback: {traceback.format_exc()}")
