@@ -50,7 +50,7 @@ class InvoiceBatchProcessor:
         self.s3_bucket = s3_bucket
         
         # Create a rate limiter
-        self.rate_limiter = AsyncLimiter(requests_per_minute, 1)
+        self.rate_limiter = AsyncLimiter(requests_per_minute, 60)
         
         # Configure Gemini API
         genai.configure(api_key=self.gemini_api_key)
@@ -474,7 +474,7 @@ async def process_invoices(
     try:
         processor = InvoiceBatchProcessor(
             s3_bucket=s3_bucket,
-            requests_per_minute=15
+            requests_per_minute=1500
         )
         
         result = await processor.process_batch(invoice_files)
