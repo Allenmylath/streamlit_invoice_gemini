@@ -22,8 +22,10 @@ st.set_page_config(
     layout="wide"
 )
 
-# File path for storing progress data
+# File paths for storing progress data and summary
 PROGRESS_FILE = "/tmp/invoice_progress.pickle"
+SUMMARY_FILE = "/tmp/invoice_summary.json"
+COMPLETE_FILE = "/tmp/invoice_processing_complete"
 
 # Function to save progress data to file
 def save_progress(current, total, message):
@@ -54,19 +56,49 @@ def load_progress():
         'timestamp': time.time()
     }
 
+# Function to save summary to file - avoids session state
+def save_summary(summary):
+    try:
+        with open(SUMMARY_FILE, 'w') as f:
+            json.dump(summary, f)
+    except Exception as e:
+        print(f"Error saving summary: {e}")
+
+# Function to load summary from file
+def load_summary():
+    try:
+        if os.path.exists(SUMMARY_FILE):
+            with open(SUMMARY_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading summary: {e}")
+    return None
+
 # Non-blocking async execution function that doesn't block the main thread
-def run_async_non_blocking(coro, callback=None):
+def run_async_non_blocking(coro):
     """Run an async coroutine in a non-blocking way."""
     async def _run_and_capture():
         try:
             result = await coro
-            if callback:
-                callback(result)
+            # Save result to file instead of using callback
+            save_summary(result)
+            # Create completion marker
+            with open(COMPLETE_FILE, "w") as f:
+                f.write("complete")
+            # Update progress to complete
+            save_progress(
+                result.get('total_processed', 0), 
+                result.get('total_files', 0),
+                "Processing complete!"
+            )
             return result
         except Exception as e:
             print(f"Error in async execution: {str(e)}")
-            if callback:
-                callback({"error": str(e)})
+            # Save error to progress
+            save_progress(0, 0, f"Error: {str(e)}")
+            # Create error marker
+            with open(COMPLETE_FILE, "w") as f:
+                f.write("error")
             return {"error": str(e)}
     
     # Create a new thread for the async operation
@@ -76,19 +108,6 @@ def run_async_non_blocking(coro, callback=None):
     )
     thread.start()
     return thread
-
-# Callback function for when processing completes
-def on_processing_complete(result):
-    # Mark as complete in session state (safe to modify on main thread)
-    if st.session_state.get('processing_started'):
-        if "error" in result:
-            save_progress(0, 0, f"Error: {result['error']}")
-        else:
-            save_progress(result['total_processed'], result['total_processed'], "Processing complete!")
-        
-        # Flag as complete in both session state and a file marker
-        with open("/tmp/invoice_processing_complete", "w") as f:
-            f.write("complete")
 
 # Modified InvoiceBatchProcessor that reports progress via file
 class ProgressReportingProcessor(InvoiceBatchProcessor):
@@ -131,9 +150,11 @@ async def process_invoices_with_progress(
         requests_per_minute=2
     )
     
-    # Remove completion marker if it exists
-    if os.path.exists("/tmp/invoice_processing_complete"):
-        os.remove("/tmp/invoice_processing_complete")
+    # Remove completion marker and summary if they exist
+    if os.path.exists(COMPLETE_FILE):
+        os.remove(COMPLETE_FILE)
+    if os.path.exists(SUMMARY_FILE):
+        os.remove(SUMMARY_FILE)
     
     result = await processor.process_batch(invoice_files)
     return result
@@ -172,12 +193,11 @@ with col1:
                 
                 invoice_files.append((file_bytes, file_type, file_name))
             
-            # Store files in session state
+            # Store files in session state and start processing
             if invoice_files:
                 st.session_state.invoice_files = invoice_files
                 st.session_state.processing_started = True
                 st.session_state.processing_complete = False
-                st.session_state.summary = None
                 
                 # Initialize progress
                 save_progress(0, len(invoice_files), "Starting processing...")
@@ -190,7 +210,7 @@ with col2:
     st.subheader("Processing Status")
     
     # Check for completed processing
-    processing_complete = os.path.exists("/tmp/invoice_processing_complete")
+    processing_complete = os.path.exists(COMPLETE_FILE)
     if processing_complete and st.session_state.get('processing_started', False):
         st.session_state.processing_complete = True
     
@@ -205,7 +225,8 @@ with col2:
             
             # Load the current progress
             progress_data = load_progress()
-            progress_value = progress_data['current'] / max(progress_data['total'], 1)
+            total = max(progress_data['total'], 1)  # Avoid division by zero
+            progress_value = min(progress_data['current'] / total, 1.0)  # Ensure doesn't exceed 1.0
             
             # Create progress bar and status text
             progress_bar = st.progress(progress_value)
@@ -216,68 +237,69 @@ with col2:
             if not st.session_state.get('processing_thread'):
                 # Use our modified process_invoices function that reports progress
                 st.session_state.processing_thread = run_async_non_blocking(
-                    process_invoices_with_progress(invoice_files),
-                    callback=on_processing_complete
+                    process_invoices_with_progress(invoice_files)
                 )
             
-            # Refresh the page automatically every 2 seconds to update progress
+            # Refresh the page automatically to update progress
             time.sleep(2)
             st.rerun()
     
     # Display results if available
     if st.session_state.get('processing_complete', False):
+        # Load the final progress data
         progress_data = load_progress()
         
+        # Check if there was an error
         if "Error" in progress_data.get('message', ''):
             st.error(progress_data['message'])
             st.session_state.processing_started = False
         else:
             st.success("✅ Batch processing complete!")
             
-            # Try to load the summary from the session state if available
-            summary = None
+            # Load the summary from file
+            summary = load_summary()
             
-            # If we don't have a summary, display basic information
             if summary is None:
-                # Display the final progress
+                # Display the final progress without summary details
                 st.progress(1.0)
                 st.info("Processing complete. Check your S3 bucket for results.")
             else:
                 # Show batch information
                 st.markdown("### Batch Information")
-                st.write(f"**Batch ID:** {summary['batch_id']}")
-                st.write(f"**Timestamp:** {summary['timestamp']}")
-                st.write(f"**S3 Location:** {summary['s3_folder']}")
+                st.write(f"**Batch ID:** {summary.get('batch_id', 'N/A')}")
+                st.write(f"**Timestamp:** {summary.get('timestamp', 'N/A')}")
+                st.write(f"**S3 Location:** {summary.get('s3_folder', 'N/A')}")
                 
                 # Show statistics
                 st.markdown("### Processing Statistics")
                 col_stats1, col_stats2, col_stats3 = st.columns(3)
                 
                 with col_stats1:
-                    st.metric(label="Total Files", value=summary['total_files'])
+                    st.metric(label="Total Files", value=summary.get('total_files', 0))
                 
                 with col_stats2:
-                    st.metric(label="Successfully Processed", value=summary['successful'])
+                    st.metric(label="Successfully Processed", value=summary.get('successful', 0))
                 
                 with col_stats3:
-                    st.metric(label="Failed", value=summary['failed'])
+                    st.metric(label="Failed", value=summary.get('failed', 0))
                 
-                # Show detailed file status
-                st.markdown("### File Status")
-                
-                # Create a table to display file results
-                file_data = []
-                for file_info in summary['files']:
-                    status = "✅ Success" if file_info['success'] else "❌ Failed"
-                    s3_key = file_info.get('s3_key', 'N/A')
-                    file_data.append({
-                        "File Name": file_info['file_name'],
-                        "Status": status,
-                        "S3 Key": s3_key
-                    })
-                
-                # Display the file status table
-                st.dataframe(file_data, use_container_width=True)
+                # Show detailed file status if files data is available
+                if 'files' in summary:
+                    st.markdown("### File Status")
+                    
+                    # Create a table to display file results
+                    file_data = []
+                    for file_info in summary['files']:
+                        status = "✅ Success" if file_info.get('success', False) else "❌ Failed"
+                        s3_key = file_info.get('s3_key', 'N/A')
+                        file_data.append({
+                            "File Name": file_info.get('file_name', 'Unknown'),
+                            "Status": status,
+                            "S3 Key": s3_key
+                        })
+                    
+                    # Display the file status table
+                    st.dataframe(file_data, use_container_width=True)
 
 # Add some helpful information at the bottom
 st.markdown("---")
@@ -302,6 +324,3 @@ if 'processing_complete' not in st.session_state:
 
 if 'processing_thread' not in st.session_state:
     st.session_state.processing_thread = None
-
-if 'summary' not in st.session_state:
-    st.session_state.summary = None
