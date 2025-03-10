@@ -238,6 +238,21 @@ async def process_invoices_with_progress(
     result = await processor.process_batch(invoice_files)
     return result
 
+# Function to reset processing state
+def reset_processing_state():
+    # Reset session state
+    st.session_state.processing_started = False
+    st.session_state.processing_complete = False
+    st.session_state.processing_thread = None
+    
+    # Clean up files
+    for file_path in [PROGRESS_FILE, SUMMARY_FILE, COMPLETE_FILE, TIMER_FILE]:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Error removing file {file_path}: {e}")
+
 # Page title
 st.title("Batch Invoice Processing Application")
 st.markdown("Upload multiple invoice images (JPG or PNG) and process them using Gemini AI.")
@@ -257,8 +272,22 @@ with col1:
     # Show warning about rate limits
     st.warning("⚠️ Processing capacity: 10 invoices per minute due to API rate limits")
     
+    # Add a reset button
+    reset_col, process_col = st.columns(2)
+    
+    with reset_col:
+        if st.button("Reset"):
+            reset_processing_state()
+            st.rerun()
+    
     # Process button
-    if uploaded_files and st.button("Process Invoices"):
+    with process_col:
+        process_button = st.button("Process Invoices")
+        
+    if uploaded_files and process_button:
+        # Reset processing state first to ensure fresh start
+        reset_processing_state()
+        
         # Check API keys
         if not os.environ.get("GEMINI_API_KEY"):
             st.error("GEMINI_API_KEY environment variable not set")
@@ -449,6 +478,7 @@ st.markdown("""
 2. Click 'Process Invoices' to extract information from all invoices
 3. The app will process files at a rate of 10 per minute (Gemini API limit)
 4. Results will be stored in S3 and a summary will be displayed
+5. Click 'Reset' to process a new batch of invoices
 """)
 
 # Add a footer
