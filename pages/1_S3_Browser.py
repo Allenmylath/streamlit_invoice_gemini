@@ -75,7 +75,7 @@ if 'history_index' not in st.session_state:
     st.session_state.history_index = -1
 
 # Default bucket name (from your invoice processor)
-DEFAULT_BUCKET = "invoices-data-dataastra"
+DEFAULT_BUCKET = "output-json-invoice"
 
 # Sidebar for settings
 with st.sidebar:
