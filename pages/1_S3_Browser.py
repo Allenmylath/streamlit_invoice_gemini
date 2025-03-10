@@ -1,12 +1,15 @@
 # pages/1_S3_Browser.py
 import streamlit as st
 import boto3
-from botocore import UNSIGNED
-from botocore.client import Config
+import botocore
 import os
 import pandas as pd
 from datetime import datetime
 import io
+import dotenv
+
+# Load environment variables if .env exists
+dotenv.load_dotenv()
 
 # Set page configuration
 st.set_page_config(
@@ -81,6 +84,17 @@ with st.sidebar:
     # Option to change bucket
     bucket_name = st.text_input("S3 Bucket Name", value=DEFAULT_BUCKET)
     
+    # Authentication options
+    auth_method = st.radio(
+        "Authentication Method",
+        ["AWS Environment Variables", "AWS Profile", "IAM Role", "No Authentication"]
+    )
+    
+    if auth_method == "AWS Environment Variables":
+        st.info("Using AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from environment")
+    elif auth_method == "AWS Profile":
+        profile_name = st.text_input("AWS Profile Name", value="default")
+    
     st.markdown("---")
     st.markdown("### Navigation Controls")
     
@@ -112,13 +126,35 @@ with st.sidebar:
         st.session_state.selected_file = None
         st.rerun()
 
-# Function to get s3 client (for public bucket)
+# Function to get s3 client based on authentication method
 def get_s3_client():
-    return boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    try:
+        if auth_method == "AWS Environment Variables":
+            # Use environment variables automatically
+            return boto3.client('s3')
+        
+        elif auth_method == "AWS Profile":
+            # Use a specific profile
+            session = boto3.Session(profile_name=profile_name)
+            return session.client('s3')
+        
+        elif auth_method == "IAM Role":
+            # Use IAM role (typically for EC2/Lambda)
+            return boto3.client('s3')
+        
+        else:  # No Authentication
+            # Try with no auth - may work for some public-read buckets
+            return boto3.client('s3', config=botocore.client.Config(signature_version=botocore.UNSIGNED))
+    
+    except Exception as e:
+        st.sidebar.error(f"Error connecting to S3: {str(e)}")
+        return None
 
 # Function to list objects in a bucket with a prefix
 def list_objects(bucket, prefix=""):
     s3_client = get_s3_client()
+    if not s3_client:
+        return [], []
     
     # Handle trailing slash for directories
     if prefix and not prefix.endswith('/') and prefix:
@@ -188,11 +224,31 @@ def list_objects(bucket, prefix=""):
 # Function to get file content
 def get_file_content(bucket, key):
     s3_client = get_s3_client()
+    if not s3_client:
+        return None
+    
     try:
         response = s3_client.get_object(Bucket=bucket, Key=key)
         return response['Body'].read()
     except Exception as e:
         st.error(f"Error reading file: {str(e)}")
+        return None
+
+# Function to get a pre-signed URL for download (works better for authenticated buckets)
+def get_presigned_url(bucket, key, expiration=3600):
+    s3_client = get_s3_client()
+    if not s3_client:
+        return None
+    
+    try:
+        url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': key},
+            ExpiresIn=expiration
+        )
+        return url
+    except Exception as e:
+        st.error(f"Error creating presigned URL: {str(e)}")
         return None
 
 # Function to navigate to a folder
@@ -317,9 +373,14 @@ try:
                     md_content = content.decode('utf-8')
                     st.markdown(md_content)
                     
-                    # Add download link
-                    direct_url = f"https://{bucket_name}.s3.amazonaws.com/{st.session_state.selected_file}"
-                    st.markdown(f"**Download:** [Click here to download]({direct_url})")
+                    # Add download link - try presigned URL first, fallback to direct URL
+                    download_url = get_presigned_url(bucket_name, st.session_state.selected_file)
+                    if download_url:
+                        st.markdown(f"**Download:** [Click here to download]({download_url})")
+                    else:
+                        # Fallback to direct URL (may not work if bucket isn't public)
+                        direct_url = f"https://{bucket_name}.s3.amazonaws.com/{st.session_state.selected_file}"
+                        st.markdown(f"**Download:** [Click here to download]({direct_url})")
                 except UnicodeDecodeError:
                     st.error("Error decoding markdown file. The file might be corrupted.")
         else:
@@ -329,6 +390,8 @@ try:
     
 except Exception as e:
     st.error(f"An error occurred: {str(e)}")
+
+# Add troubleshooting section
 
 # Footer
 st.markdown("---")
