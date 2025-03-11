@@ -289,7 +289,7 @@ class InvoiceBatchProcessor:
                                 self.model.generate_content,
                                 [prompt, image]
                             ),
-                            timeout=120  # 2 minute timeout per invoice
+                            timeout=600  
                         )
                     
                         end_time = datetime.datetime.now()
