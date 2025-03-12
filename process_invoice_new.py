@@ -208,13 +208,16 @@ class InvoiceBatchProcessor:
             
             # Upload to S3 immediately after processing
             print(f"[S3 UPLOAD START] Uploading result for {file_name}")
-            result = await self._upload_to_s3(result, batch_id, s3_folder)
+            # Pass the original file_bytes to the upload function
+            result = await self._upload_to_s3(result, batch_id, s3_folder, file_bytes)
             
             if "s3_error" in result:
                 logger.error(f"S3 upload failed for {file_name}: {result['s3_error']}")
                 print(f"[S3 UPLOAD ERROR] Failed for {file_name}: {result['s3_error']}")
             else:
                 print(f"[S3 UPLOAD SUCCESS] Completed for {file_name}: {result.get('s3_key')}")
+                if "photo_s3_key" in result:
+                    print(f"[IMAGE UPLOAD SUCCESS] Original image uploaded to {result.get('photo_s3_bucket')}/{result.get('photo_s3_key')}")
             
             return result
             
@@ -232,6 +235,7 @@ class InvoiceBatchProcessor:
             }
             
             try:
+                # Don't pass image data for error uploads
                 error_result = await self._upload_to_s3(error_result, batch_id, s3_folder)
                 print(f"[S3 ERROR UPLOAD] Error report for {file_name} uploaded")
             except Exception as s3_e:
