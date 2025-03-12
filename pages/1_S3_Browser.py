@@ -378,6 +378,10 @@ try:
                     download_url = get_presigned_url(bucket_name, st.session_state.selected_file)
                     if download_url:
                         st.markdown(f"**Download:** [Click here to download]({download_url})")
+                        original_file = st.session_state.selected_file.replace('_processed.md', '.jpg')
+                        original_url = f"https://photo-bucket-mylath.s3.amazonaws.com/{original_file}"
+                        st.markdown(f"**Original:** [Click to view original]({original_url}) ↗️", unsafe_allow_html=True)
+                        
                     else:
                         # Fallback to direct URL (may not work if bucket isn't public)
                         direct_url = f"https://{bucket_name}.s3.amazonaws.com/{st.session_state.selected_file}"
