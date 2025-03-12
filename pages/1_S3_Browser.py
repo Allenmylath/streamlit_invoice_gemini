@@ -391,7 +391,11 @@ try:
                             original_file = st.session_state.selected_file.replace('_processed.md', '.jpg')
                             original_url = f"https://photo-bucket-mylath.s3.amazonaws.com/{original_file}"
                             st.markdown(f"**Original:** [Click to view original]({original_url}) ↗️", unsafe_allow_html=True)
-    
+                except UnicodeDecodeError:
+                    st.error("Error decoding markdown file. The file might be corrupted.")
+            else:
+                st.info("Select a markdown file to preview its contents") 
+            
 except Exception as e:
     st.error(f"An error occurred: {str(e)}")
 
