@@ -373,6 +373,7 @@ try:
                     md_content = content.decode('utf-8')
                     st.markdown(md_content)
                     
+
                     # Add download link - try presigned URL first, fallback to direct URL
                     download_url = get_presigned_url(bucket_name, st.session_state.selected_file)
                     if download_url:
@@ -381,12 +382,15 @@ try:
                         # Fallback to direct URL (may not work if bucket isn't public)
                         direct_url = f"https://{bucket_name}.s3.amazonaws.com/{st.session_state.selected_file}"
                         st.markdown(f"**Download:** [Click here to download]({direct_url})")
-                except UnicodeDecodeError:
-                    st.error("Error decoding markdown file. The file might be corrupted.")
-        else:
-            st.info("Select a markdown file to preview its contents")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # Add "View Original" link that replaces bucket name and file extension
+                        if st.session_state.selected_file.endswith('_processed.md'):
+                            # Create original image URL by:
+                            # 1. Change bucket name to photo-bucket-mylath
+                            # 2. Replace _processed.md with .jpg
+                            original_file = st.session_state.selected_file.replace('_processed.md', '.jpg')
+                            original_url = f"https://photo-bucket-mylath.s3.amazonaws.com/{original_file}"
+                            st.markdown(f"**Original:** [Click to view original]({original_url}) ↗️", unsafe_allow_html=True)
     
 except Exception as e:
     st.error(f"An error occurred: {str(e)}")
