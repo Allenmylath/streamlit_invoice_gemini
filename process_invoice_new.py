@@ -369,15 +369,15 @@ class InvoiceBatchProcessor:
                     "error": str(e),
                     "timestamp": datetime.datetime.now().isoformat()
                 }
-    
     async def _upload_to_s3(
         self, 
         result: Dict[str, Any],
         batch_id: str,
-        s3_folder: str
+        s3_folder: str,
+        original_image_data: bytes = None  # Add parameter for original image data
     ) -> Dict[str, Any]:
         """
-        Upload processing result to S3
+        Upload processing result to S3 and original image to photo bucket
         """
         file_name = result["file_name"]
         
@@ -417,6 +417,32 @@ class InvoiceBatchProcessor:
                             Metadata=metadata
                         )
                         logger.info(f"Uploaded markdown for {file_name} to {s3_key}")
+                        
+                        # Upload original image to photo bucket with the same key structure
+                        if original_image_data:
+                            try:
+                                photo_bucket = "photo-bucket-mylath"
+                                # Use the same key structure as the markdown file but keep original extension
+                                _, ext = os.path.splitext(file_name)
+                                if not ext:  # If no extension, default to .jpg
+                                    ext = ".jpg"
+                                photo_key = f"{s3_folder}{file_base}_{timestamp_short}{ext}"
+                                
+                                await s3.put_object(
+                                    Bucket=photo_bucket,
+                                    Key=photo_key,
+                                    Body=original_image_data,
+                                    ContentType=f"image/{ext[1:] if ext.startswith('.') else ext}",
+                                    Metadata=metadata
+                                )
+                                logger.info(f"Uploaded original image for {file_name} to {photo_bucket}/{photo_key}")
+                                result["photo_s3_key"] = photo_key
+                                result["photo_s3_bucket"] = photo_bucket
+                            except Exception as img_e:
+                                logger.error(f"Image upload error for {file_name}: {str(img_e)}")
+                                print(f"[IMAGE S3 PUT ERROR] Failed to upload image {file_name}: {str(img_e)}")
+                                result["photo_s3_error"] = str(img_e)
+                        
                     except Exception as s3_e:
                         logger.error(f"S3 upload error for {file_name}: {str(s3_e)}")
                         print(f"[S3 PUT ERROR] Failed to upload {file_name}: {str(s3_e)}")
@@ -452,8 +478,7 @@ class InvoiceBatchProcessor:
             logger.error(f"Error uploading {file_name} to S3: {str(e)}")
             print(f"[S3 UPLOAD FAILED] {file_name}: {str(e)}")
             result["s3_error"] = str(e)
-            return result
-
+            return result    
 # Usage example
 async def process_invoices(
     invoice_files: List[Tuple[bytes, str, str]],
